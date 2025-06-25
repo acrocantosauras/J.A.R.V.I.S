@@ -1,0 +1,228 @@
+import sys
+import pyttsx3
+import speech_recognition as sr
+import pyautogui
+import time
+import os
+import datetime
+import webbrowser
+import tkinter as tk
+from tkinter import messagebox, scrolledtext
+import requests
+from bs4 import BeautifulSoup
+import openai
+from PIL import Image, ImageTk
+import pyperclip
+from plyer import notification
+
+engine = pyttsx3.init('sapi5')
+engine.setProperty('rate', 150)
+
+log_file_path = "jarvis_session_log.txt"
+chat_history = []
+
+openai.api_key = "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"
+
+def speak(audio):
+    engine.say(audio)
+    engine.runAndWait()
+
+def log(text):
+    log_text.insert(tk.END, text + "\n")
+    with open(log_file_path, "a") as f:
+        f.write(text + "\n")
+    app.update_idletasks()
+
+def takeCommand():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        status_label.config(text="Status: Listening...")
+        app.update_idletasks()
+        try:
+            audio = recognizer.listen(source, timeout=5)
+            query = recognizer.recognize_google(audio, language='en-in')
+            log(f"User: {query}")
+            status_label.config(text="Status: Processing...")
+            return query.lower()
+        except sr.UnknownValueError:
+            speak("Sorry, I didn't catch that.")
+        except sr.WaitTimeoutError:
+            speak("Listening timed out.")
+        except Exception as e:
+            speak("Error occurred.")
+            log(f"Error: {str(e)}")
+        status_label.config(text="Status: Idle")
+        return "none"
+
+def chatWithGPT(prompt):
+    try:
+        log("AI: Thinking...")
+        chat_history.append({"role": "user", "content": prompt})
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=chat_history[-5:]
+        )
+        ai_response = response["choices"][0]["message"]["content"]
+        chat_history.append({"role": "assistant", "content": ai_response})
+        log("AI: " + ai_response)
+        speak(ai_response)
+        return ai_response
+    except Exception as e:
+        log(f"AI Error: {str(e)}")
+        speak("Something went wrong with AI.")
+        return ""
+
+def executeCommand(query):
+    try:
+        apps = {
+            "spotify": "spotify",
+            "chrome": "chrome",
+            "notepad": "notepad",
+            "explorer": "explorer",
+            "netflix": "https://www.netflix.com",
+            "youtube": "https://www.youtube.com",
+            "calculator": "calc",
+            "vlc": "vlc"
+        }
+
+        if 'open ' in query:
+            app_name = query.split('open ',1)[1].strip()
+            if app_name in apps:
+                target = apps[app_name]
+                if target.startswith("http"):
+                    webbrowser.open(target)
+                else:
+                    os.system(f"start {target}")
+                speak(f"Opening {app_name}")
+            else:
+                speak(f"Sorry, I don't know how to open {app_name}")
+
+        elif 'read my clipboard' in query:
+            content = pyperclip.paste()
+            if content:
+                log(f"Clipboard: {content}")
+                speak("Reading clipboard content.")
+                speak(content)
+            else:
+                speak("Clipboard is empty.")
+
+        elif 'show reminder' in query:
+            notification.notify(
+                title="JARVIS Reminder",
+                message="This is a reminder from Jarvis AI Assistant.",
+                timeout=5
+            )
+            speak("Reminder notification sent.")
+
+        elif 'shutdown' in query:
+            speak("Shutting down your PC.")
+            os.system("shutdown /s /t 1")
+
+        elif 'volume up' in query:
+            pyautogui.press("volumeup")
+            speak("Volume increased")
+
+        elif 'the time' in query:
+            strTime = datetime.datetime.now().strftime("%H:%M:%S")
+            speak(f"Sir, the time is {strTime}")
+
+        elif 'weather' in query:
+            search = "temperature in your city"
+            url = f"https://www.google.com/search?q={search}"
+            r = requests.get(url)
+            data = BeautifulSoup(r.text, "html.parser")
+            temp_element = data.find("div", class_="BNeawe")
+            if temp_element:
+                temp = temp_element.text
+                speak(f"Current temperature is {temp}")
+            else:
+                speak("Sorry, I couldn't fetch the temperature.")
+
+        elif 'ask ai' in query:
+            prompt = query.replace("ask ai", "").strip()
+            response = chatWithGPT(prompt)
+            speak(response)
+
+        elif 'exit' in query or 'quit' in query:
+            speak("Goodbye!")
+            app.quit()
+
+        else:
+            speak("I didn't recognize the command.")
+    except Exception as e:
+        log(f"Execution Error: {str(e)}")
+        speak("Error executing command.")
+
+def startListening():
+    query = takeCommand()
+    if query != "none":
+        executeCommand(query)
+        status_label.config(text="Status: Idle")
+
+def toggleDarkMode():
+    if app.cget("bg") == "#FFFFFF":
+        bg_color = "#2E2E2E"
+        fg_color = "#FFFFFF"
+    else:
+        bg_color = "#FFFFFF"
+        fg_color = "#000000"
+
+    app.configure(bg=bg_color)
+    title.configure(bg=bg_color, fg=fg_color)
+    log_text.configure(bg=bg_color, fg=fg_color, insertbackground=fg_color)
+    for button in buttons:
+        button.configure(bg=bg_color, fg=fg_color)
+    status_label.configure(bg=bg_color, fg=fg_color)
+
+def changeVoice():
+    voices = engine.getProperty('voices')
+    current_voice = engine.getProperty('voice')
+    new_voice = voices[1].id if current_voice == voices[0].id else voices[0].id
+    engine.setProperty('voice', new_voice)
+    speak("Voice changed successfully.")
+
+def askAI():
+    user_query = entry_box.get()
+    if user_query.strip():
+        chatWithGPT(user_query)
+    else:
+        log("Please enter a question.")
+
+def guiApp():
+    global app, log_text, title, entry_box, buttons, status_label
+
+    app = tk.Tk()
+    app.title("JARVIS AI Assistant")
+    app.geometry("700x750")
+    app.configure(bg="#F0F0F0")
+
+    title = tk.Label(app, text="JARVIS AI Assistant", font=("Helvetica", 18, "bold"), bg="#F0F0F0")
+    title.pack(pady=5)
+
+    status_label = tk.Label(app, text="Status: Idle", font=("Helvetica", 10), bg="#F0F0F0", fg="blue")
+    status_label.pack()
+
+    log_text = scrolledtext.ScrolledText(app, height=12, width=50, font=("Helvetica", 12))
+    log_text.pack(pady=10)
+
+    entry_box = tk.Entry(app, width=40, font=("Helvetica", 12))
+    entry_box.pack(pady=5)
+
+    buttons = [
+        tk.Button(app, text="Speak", font=("Helvetica", 14), command=startListening),
+        tk.Button(app, text="Ask AI", font=("Helvetica", 14), command=askAI),
+        tk.Button(app, text="About", font=("Helvetica", 14),
+                  command=lambda: messagebox.showinfo("About", "JARVIS AI Assistant\nDeveloped by Sarthak & Meet")),
+        tk.Button(app, text="Toggle Dark Mode", font=("Helvetica", 14), command=toggleDarkMode),
+        tk.Button(app, text="Change Voice", font=("Helvetica", 14), command=changeVoice),
+        tk.Button(app, text="Quit", font=("Helvetica", 14), command=app.quit),
+    ]
+
+    for btn in buttons:
+        btn.pack(pady=5)
+        btn.bind("<Enter>", lambda e, b=btn: b.config(bg="#555555", fg="white"))
+        btn.bind("<Leave>", lambda e, b=btn: b.config(bg="SystemButtonFace", fg="black"))
+
+    app.mainloop()
+
+guiApp()
