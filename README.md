@@ -82,7 +82,4 @@ JARVIS (Just A Rather Very Intelligent System) is designed to bring futuristic, 
 - pyautogui, psutil, subprocess, os  
 - Optional: OpenAI GPT API / Vosk / Porcupine
 
----
-
-## Directory Structure
 
