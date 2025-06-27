@@ -1,85 +1,118 @@
-# JARVIS  
+# JARVIS
+
 A voice-controlled AI co-pilot for Windows that automates everyday system tasks using speech recognition and natural language processing.
 
 ---
 
-## Overview
+## 🧠 Overview
 
-JARVIS (Just A Rather Very Intelligent System) is designed to bring futuristic, hands-free computing to life. Using your voice, JARVIS can launch applications, search the internet, manage files, control system settings, and more — making it the perfect productivity assistant for developers, students, and professionals.
+JARVIS (Just A Rather Very Intelligent System) brings hands-free computing to life. Using voice commands, it can:
 
----
+- Open applications like Chrome, Spotify, Notepad, and more
+- Search the internet or get weather info
+- Send emails
+- Set alarms
+- Take notes and screenshots
+- Provide spoken responses using TTS (pyttsx3)
+- Act as a GPT-powered assistant using OpenAI API
 
-## Project Roadmap
-
-###  Step 1: Build the Core Voice Recognition Pipeline  
-- **Speech-to-Text**:  
-  - Leverages `SpeechRecognition` and `PyAudio` to capture and convert user speech to text.  
-  - Real-time transcription with basic noise handling.  
-  - Live feedback display during speech capture.
-
-- **Wake Word Detection (optional)**:  
-  - Exploring integration of `Porcupine`, `Snowboy`, or `Vosk` for always-on listening with a trigger phrase like “Hey JARVIS”.
-
->  **Status**: Functional voice-to-text pipeline with real-time input capture.
+Built for developers, students, and productivity enthusiasts looking for a futuristic desktop companion.
 
 ---
 
-### Step 2: Build the Intent Classification Module  
-- **Basic NLP Model**:  
-  - Starts with rule-based command detection using keywords and regex.  
-  - Plans to integrate lightweight NLP models using `spaCy` or transformer-based classification.
+## 🚀 Features
 
-- **Command Mapping**:  
-  - Intent-to-function mapping (e.g., “open browser” → `open_chrome()`).  
-  - Dynamic parsing of variables like app names or search terms.
-
->  **In Progress**: Basic rule engine working. ML-based parsing under development.
-
----
-
-### Step 3: Develop the Command Execution Engine  
-- **Windows Automation**:  
-  - Automates real system tasks using `os`, `subprocess`, `pyautogui`, and `psutil`.  
-  - Handles application control, volume adjustment, file navigation, etc.
-
-- **Voice Feedback**:  
-  - Uses `pyttsx3` for spoken confirmations and interaction.
-
->  **Pending**: Command mapping implemented; feedback system being fine-tuned.
+- 🎙️ **Voice Recognition** via `SpeechRecognition`
+- 🤖 **GPT Integration** using OpenAI's Chat API
+- 📢 **Text-to-Speech Engine** (TTS) with customizable voice/rate
+- 🧾 **GUI Interface** built with `tkinter`
+- 🧠 **Wake Word Detection** with Vosk (offline support)
+- ⏰ **Alarms, Reminders & Clipboard Reading**
+- 📝 **Note Taking + Screenshot Capture**
+- 💡 **System Commands** (Volume, Shutdown, Open Apps)
 
 ---
 
-### Step 4: Enable Autostart and Background Operation  
-- Configure JARVIS to run at Windows startup.  
-- Implement silent tray icon mode with wake-word activation.  
-- Allow user-initiated shutdown or wake functions.
+## 🛠️ Installation
 
->  **Planned**: Background listening and autostart features in testing phase.
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/yourusername/jarvis.git
+   ```
 
----
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-### Step 5: Optional Enhancements (Post-MVP)  
-- **GUI Dashboard**:  
-  - A frontend panel to view logs, toggle features, and customize settings.  
+3. Run the application:
+   ```bash
+   python jarvis.py
+   ```
 
-- **Contextual Memory**:  
-  - Add context tracking for conversational continuity.
-
-- **Cloud NLP APIs (Optional)**:  
-  - Integrate OpenAI/Bedrock for more advanced understanding and responses.  
-
-- **IoT/Smart Home Support**:  
-  - Connect to smart home devices via IFTTT, MQTT, or API integrations.
+> ✅ Vosk model should be downloaded and placed in your working directory.
 
 ---
 
-## Technologies Used
+## 🧭 Project Roadmap
 
-- Python  
-- SpeechRecognition + PyAudio  
-- pyttsx3 for Text-to-Speech  
-- spaCy / HuggingFace Transformers  
-- pyautogui, psutil, subprocess, os  
-- Optional: OpenAI GPT API / Vosk / Porcupine
+### ✅ Step 1: Core Voice Recognition
+- Real-time transcription using `SpeechRecognition`
+- Wake word detection using Vosk ("Hey Jarvis")
 
+### ✅ Step 2: Intent Classification
+- Rule-based parsing using keywords
+- Future: SpaCy/HuggingFace integration
+
+### ✅ Step 3: Command Execution
+- Handles system automation (apps, volume, browser, etc.)
+- Integrated voice feedback with `pyttsx3`
+
+### ✅ Step 4: GUI + Background Support
+- Tkinter-based dashboard
+- Dark mode toggle, TTS settings, About panel
+- Future: Add system tray support
+
+### 🔄 Step 5: Post-MVP Enhancements
+- GPT memory/contextual conversation
+- Integration with smart devices/IoT
+- Multi-language voice input/output
+
+---
+
+## 💻 Technologies Used
+
+- Python
+- `SpeechRecognition` + `PyAudio`
+- `pyttsx3` (TTS)
+- `pyautogui`, `os`, `subprocess`, `requests`, `bs4`
+- `tkinter`, `plyer`, `pyperclip`
+- OpenAI GPT-3.5-Turbo API
+- Vosk (Wake word engine)
+
+---
+
+## 📸 Screenshots / Demo
+
+> _Coming soon..._
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Feel free to fork the repo and submit pull requests.
+
+---
+
+## 📜 License
+
+This project is licensed under the [MIT License](LICENSE).
+
+---
+
+## 🧑‍💻 Developed by
+
+Meet Jadhav & Sarthak (Team JARVIS)
+
+> Special thanks to open-source contributors and the Python community.
 
