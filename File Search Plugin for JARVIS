@@ -1,26 +1,29 @@
-"""
-File Search Plugin for JARVIS
-"""
 import os
+import re
 
 def register(jarvis):
     def file_search_handler(query, speak, log, **kwargs):
-        import re
-        pattern = re.search(r'file (?:named|called|with name) ([^ ]+)', query)
+        pattern = re.search(r'(?:file (?:named|called|with name)?\s*)(\S+)', query)
         if not pattern:
             speak("Please specify the file name.")
             return
+
         filename = pattern.group(1)
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+        speak("Searching, please wait...")
+
         matches = []
-        for root, dirs, files in os.walk(os.path.dirname(__file__)+"/../../"):
+        for root, dirs, files in os.walk(base_dir):
             for f in files:
                 if filename.lower() in f.lower():
                     matches.append(os.path.join(root, f))
+
         if matches:
             speak(f"Found {len(matches)} file(s). First: {os.path.basename(matches[0])}")
-            log("\n".join(matches))
+            log("File matches:\n" + "\n".join(matches))
         else:
             speak("No matching files found.")
+
     jarvis['add_command'](
         trigger_words=['find file', 'search file', 'file named', 'file called'],
         handler=file_search_handler,
