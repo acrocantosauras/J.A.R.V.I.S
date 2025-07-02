@@ -1,0 +1,14 @@
+"""
+Example JARVIS Plugin
+Add new commands by defining a register() function.
+"""
+def register(jarvis):
+    # jarvis is a dict with 'add_command' method
+    def hello_plugin(query, speak, log, **kwargs):
+        speak("Hello from plugin!")
+        log("Plugin executed: hello_plugin")
+    jarvis['add_command'](
+        trigger_words=['hello plugin', 'test plugin'],
+        handler=hello_plugin,
+        description='Say hello from the plugin.'
+    )
