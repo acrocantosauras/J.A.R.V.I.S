@@ -1,0 +1,1160 @@
+import sys
+import pyttsx3
+import speech_recognition as sr
+import pyautogui
+import time
+import os
+import datetime
+import webbrowser
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, simpledialog
+import requests
+from bs4 import BeautifulSoup
+import openai
+from PIL import Image, ImageTk
+import pyperclip
+from plyer import notification
+import json
+import spacy
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import importlib.util
+import glob
+from cryptography.fernet import Fernet
+import pystray
+from PIL import Image as PILImage
+import threading
+
+# --- Global color variables (safe defaults) ---
+bg_color = "#FFFFFF"
+button_bg = "#1A237E"
+button_fg = "#FFFFFF"
+
+engine = pyttsx3.init('sapi5')
+engine.setProperty('rate', 150)
+
+log_file_path = "jarvis_session_log.txt"
+chat_history = []
+
+def mask_sensitive(text):
+    """Mask sensitive information such as API keys and passwords in logs and errors."""
+    settings_keys = ['openai_api_key', 'email_password']
+    settings = load_settings() if 'load_settings' in globals() else {}
+    for key in settings_keys:
+        value = settings.get(key)
+        if value and value in text:
+            text = text.replace(value, '*' * 8)
+    return text
+
+SETTINGS_FILE = os.path.join(os.path.dirname(__file__), 'settings.json')
+NOTES_FILE = os.path.join(os.path.dirname(__file__), 'notes.json')
+CALENDAR_FILE = os.path.join(os.path.dirname(__file__), 'calendar.json')
+TIMER_RUNNING = False
+TIMER_END = None
+STOPWATCH_RUNNING = False
+STOPWATCH_START = None
+STOPWATCH_ELAPSED = 0
+
+# --- Encrypted Settings ---
+ENCRYPTION_KEY_FILE = os.path.join(os.path.dirname(__file__), 'settings.key')
+
+def get_encryption_key():
+    if not os.path.exists(ENCRYPTION_KEY_FILE):
+        key = Fernet.generate_key()
+        with open(ENCRYPTION_KEY_FILE, 'wb') as f:
+            f.write(key)
+    else:
+        with open(ENCRYPTION_KEY_FILE, 'rb') as f:
+            key = f.read()
+    return key
+
+def encrypt_value(value):
+    key = get_encryption_key()
+    f = Fernet(key)
+    return f.encrypt(value.encode()).decode()
+
+def decrypt_value(value):
+    key = get_encryption_key()
+    f = Fernet(key)
+    try:
+        return f.decrypt(value.encode()).decode()
+    except Exception:
+        return value
+
+# Patch load_settings/save_settings to decrypt/encrypt sensitive fields
+SENSITIVE_KEYS = ['openai_api_key', 'email_password']
+
+def load_settings():
+    try:
+        with open(SETTINGS_FILE, 'r') as f:
+            data = json.load(f)
+        for k in SENSITIVE_KEYS:
+            if k in data and data[k] and not data[k].startswith('gAAAA'):
+                continue  # not encrypted
+            if k in data and data[k]:
+                data[k] = decrypt_value(data[k])
+        return data
+    except Exception:
+        return {}
+
+def save_settings(settings):
+    data = settings.copy()
+    for k in SENSITIVE_KEYS:
+        if k in data and data[k] and not data[k].startswith('gAAAA'):
+            data[k] = encrypt_value(data[k])
+    with open(SETTINGS_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def update_setting(key, value):
+    settings = load_settings()
+    settings[key] = value
+    save_settings(settings)
+
+settings = load_settings()
+
+# Use settings for OpenAI API key and dark mode
+openai.api_key = settings.get('openai_api_key', '')
+DARK_MODE = settings.get('dark_mode', False)
+VOICE_INDEX = settings.get('voice', 0)
+DEFAULT_CITY = settings.get('default_city', 'your city')
+
+# Warn if API key is missing, but do not exit
+if not openai.api_key or openai.api_key.strip() == "":
+    print("Warning: OpenAI API key missing. AI features will not work.")
+    # Optionally, show a messagebox after GUI starts
+
+# Set voice from settings
+voices = engine.getProperty('voices')
+if 0 <= VOICE_INDEX < len(voices):
+    engine.setProperty('voice', voices[VOICE_INDEX].id)
+
+def speak(audio):
+    engine.say(audio)
+    engine.runAndWait()
+
+def log(text):
+    text = mask_sensitive(text)
+    log_text.insert(tk.END, text + "\n")
+    with open(log_file_path, "a") as f:
+        f.write(text + "\n")
+    app.update_idletasks()
+
+def takeCommand():
+    recognizer = sr.Recognizer()
+    try:
+        with sr.Microphone() as source:
+            status_label.config(text="Status: Listening...")
+            app.update_idletasks()
+            try:
+                # Increased timeout and added phrase_time_limit
+                audio = recognizer.listen(source, timeout=10, phrase_time_limit=7)
+                query = recognizer.recognize_google(audio, language='en-in')
+                log(f"User: {query}")
+                status_label.config(text="Status: Processing...")
+                return query.lower()
+            except sr.UnknownValueError:
+                speak("Sorry, I didn't catch that.")
+                show_error("Sorry, I didn't catch that.", "Speech Recognition Error")
+            except sr.WaitTimeoutError:
+                speak("Listening timed out. Please try again and speak clearly into the mic.")
+                show_error("Listening timed out. Please try again and speak clearly into the mic.", "Microphone Timeout")
+            except Exception as e:
+                speak("Error occurred.")
+                log(f"Error: {str(e)}")
+                show_error(f"Speech recognition error: {str(e)}", "Speech Recognition Error")
+            status_label.config(text="Status: Idle")
+            return "none"
+    except OSError as e:
+        show_error("Microphone not found or not accessible. Please check your microphone.", "Microphone Error")
+        speak("Microphone not found or not accessible. Please check your microphone.")
+        return "none"
+    except Exception as e:
+        show_error(f"Microphone error: {str(e)}", "Microphone Error")
+        speak("Microphone error.")
+        return "none"
+
+def chatWithGPT(prompt):
+    try:
+        if not openai.api_key or openai.api_key.strip() == "":
+            log("AI: No API key set. Please set your OpenAI API key to use AI features.")
+            show_error("No API key set. Please set your OpenAI API key to use AI features.", "OpenAI API Error")
+            speak("No API key set. Please set your OpenAI API key to use AI features.")
+            return ""
+        log("AI: Thinking...")
+        chat_history.append({"role": "user", "content": prompt})
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=chat_history[-5:]
+        )
+        ai_response = response["choices"][0]["message"]["content"]
+        chat_history.append({"role": "assistant", "content": ai_response})
+        log("AI: " + ai_response)
+        speak(ai_response)
+        return ai_response
+    except Exception as e:
+        log(f"AI Error: {str(e)}")
+        show_error(f"AI Error: {str(e)}", "OpenAI API Error")
+        speak("Something went wrong with AI.")
+        return ""
+
+# Load spaCy English model
+try:
+    nlp = spacy.load("en_core_web_sm")
+except Exception:
+    nlp = None
+    print("spaCy English model not found. Please run: python -m spacy download en_core_web_sm")
+
+# Expanded synonym and intent map for more flexible NLP
+COMMAND_SYNONYMS = {
+    'chrome': ['chrome', 'browser', 'google chrome', 'web browser', 'internet'],
+    'notepad': ['notepad', 'editor', 'text editor', 'write', 'notes'],
+    'explorer': ['explorer', 'file explorer', 'files', 'my computer', 'folders', 'documents'],
+    'spotify': ['spotify', 'music', 'music player', 'play music', 'songs'],
+    'calculator': ['calculator', 'calc', 'calculation', 'math', 'calculate'],
+    'vlc': ['vlc', 'media player', 'video player', 'play video', 'movies'],
+    'netflix': ['netflix', 'movies', 'tv', 'tv shows', 'watch netflix'],
+    'youtube': ['youtube', 'videos', 'video site', 'watch youtube'],
+}
+
+# Expanded intent verbs
+INTENT_VERBS = ['open', 'start', 'launch', 'run', 'show', 'play', 'begin', 'execute']
+
+# Helper to match app name from synonyms (case-insensitive)
+def match_app_name(query):
+    query = query.lower()
+    for app, synonyms in COMMAND_SYNONYMS.items():
+        for synonym in synonyms:
+            if synonym in query:
+                return app
+    return None
+
+# Helper to match intent verb (case-insensitive)
+def match_intent_verb(query):
+    query = query.lower()
+    for verb in INTENT_VERBS:
+        if verb in query:
+            return verb
+    return None
+
+# Helper to extract city from query using spaCy NER
+def extract_city_from_query(query):
+    if nlp:
+        doc = nlp(query)
+        for ent in doc.ents:
+            if ent.label_ == 'GPE':
+                return ent.text
+    return None
+
+# Improved NLP-based command execution
+def executeCommand(query):
+    try:
+        if nlp:
+            doc = nlp(query)
+            app_name = match_app_name(query)
+            intent_verb = match_intent_verb(query)
+        else:
+            app_name = match_app_name(query)
+            intent_verb = match_intent_verb(query)
+
+        # Set city command
+        if any(word in query for word in ['set my city', 'change city', 'set location', 'change location', 'my city is', 'my location is']):
+            city = extract_city_from_query(query)
+            if not city:
+                # Try to extract city as last word
+                city = query.split()[-1]
+            update_setting('default_city', city)
+            global DEFAULT_CITY
+            DEFAULT_CITY = city
+            speak(f"City set to {city} for weather queries.")
+            log(f"City set to {city} for weather queries.")
+            return
+
+        apps = {
+            "spotify": "spotify",
+            "chrome": "chrome",
+            "notepad": "notepad",
+            "explorer": "explorer",
+            "netflix": "https://www.netflix.com",
+            "youtube": "https://www.youtube.com",
+            "calculator": "calc",
+            "vlc": "vlc"
+        }
+
+        # Flexible app launching
+        if app_name and intent_verb:
+            target = apps.get(app_name)
+            if target:
+                if str(target).startswith("http"):
+                    webbrowser.open(target)
+                else:
+                    os.system(f"start {target}")
+                speak(f"Opening {app_name}")
+                return
+            else:
+                speak(f"Sorry, I don't know how to open {app_name}")
+                return
+        # Allow just the app name ("chrome", "spotify")
+        if app_name and query.strip() == app_name:
+            target = apps.get(app_name)
+            if target:
+                if str(target).startswith("http"):
+                    webbrowser.open(target)
+                else:
+                    os.system(f"start {target}")
+                speak(f"Opening {app_name}")
+                return
+
+                # Flexible clipboard
+                if any(word in query for word in ['clipboard', 'paste', 'read my clipboard']):
+                    content = pyperclip.paste()
+                    add_clipboard_history(content)
+                    if content:
+                        log(f"Clipboard: {content}")
+                        speak("Reading clipboard content.")
+                        speak(content)
+                    else:
+                        speak("Clipboard is empty.")
+                    return
+        
+        # --- Clipboard History ---
+        CLIPBOARD_HISTORY_FILE = os.path.join(os.path.dirname(__file__), 'clipboard_history.json')
+        CLIPBOARD_HISTORY_LIMIT = 20
+        
+        def add_clipboard_history(content):
+            if not content:
+                return
+            try:
+                if os.path.exists(CLIPBOARD_HISTORY_FILE):
+                    with open(CLIPBOARD_HISTORY_FILE, 'r') as f:
+                        history = json.load(f)
+                else:
+                    history = []
+                if content not in history:
+                    history.append(content)
+                    if len(history) > CLIPBOARD_HISTORY_LIMIT:
+                        history = history[-CLIPBOARD_HISTORY_LIMIT:]
+                    with open(CLIPBOARD_HISTORY_FILE, 'w') as f:
+                        json.dump(history, f, indent=2)
+            except Exception as e:
+                log(f"Clipboard history error: {e}")
+        
+        def show_clipboard_history():
+            try:
+                if os.path.exists(CLIPBOARD_HISTORY_FILE):
+                    with open(CLIPBOARD_HISTORY_FILE, 'r') as f:
+                        history = json.load(f)
+                else:
+                    history = []
+                history_win = tk.Toplevel(app)
+                history_win.title("Clipboard History")
+                history_win.geometry("400x400")
+                history_win.configure(bg="#F7F7F7")
+                listbox = tk.Listbox(history_win, font=("Segoe UI", 12), width=40, height=18)
+                listbox.pack(pady=10)
+                for item in reversed(history):
+                    listbox.insert(tk.END, item)
+                def copy_selected():
+                    sel = listbox.curselection()
+                    if sel:
+                        pyperclip.copy(listbox.get(sel[0]))
+                        messagebox.showinfo("Copied", "Copied to clipboard!", parent=history_win)
+                tk.Button(history_win, text="Copy Selected", font=("Segoe UI", 12), command=copy_selected).pack(pady=5)
+                tk.Button(history_win, text="Close", font=("Segoe UI", 12), command=history_win.destroy).pack(pady=5)
+            except Exception as e:
+                log(f"Clipboard history window error: {e}")
+
+        # Flexible reminder
+        if any(word in query for word in ['reminder', 'remind', 'notify', 'notification']):
+            notification.notify(
+                title="JARVIS Reminder",
+                message="This is a reminder from Jarvis AI Assistant.",
+                timeout=5
+            )
+            speak("Reminder notification sent.")
+            return
+
+        # Flexible shutdown
+        if any(word in query for word in ['shutdown', 'turn off', 'power off']):
+            speak("Shutting down your PC.")
+            os.system("shutdown /s /t 1")
+            return
+
+        # Flexible volume up
+        if any(word in query for word in ['volume up', 'increase volume', 'louder']):
+            pyautogui.press("volumeup")
+            speak("Volume increased")
+            return
+
+        # Flexible time
+        if any(word in query for word in ['the time', 'current time', 'what time', 'time is it']):
+            strTime = datetime.datetime.now().strftime("%H:%M:%S")
+            speak(f"Sir, the time is {strTime}")
+            return
+
+        # Flexible weather
+        if any(word in query for word in ['weather', 'temperature', 'forecast']):
+            city = extract_city_from_query(query) or DEFAULT_CITY
+            if not city or city == 'your city':
+                # Prompt user for city if not set
+                city = simpledialog.askstring("Set City", "Please enter your city for weather queries:")
+                if city:
+                    update_setting('default_city', city)
+                    DEFAULT_CITY = city
+                else:
+                    speak("City not set. Please try again.")
+                    return
+            search = f"temperature in {city}"
+            url = f"https://www.google.com/search?q={search}"
+            r = requests.get(url)
+            data = BeautifulSoup(r.text, "html.parser")
+            temp_element = data.find("div", class_="BNeawe")
+            if temp_element:
+                temp = temp_element.text
+                speak(f"Current temperature in {city} is {temp}")
+            else:
+                speak("Sorry, I couldn't fetch the temperature.")
+            return
+
+        # Flexible AI chat
+        if any(word in query for word in ['ask ai', 'ai', 'chatgpt', 'gpt', 'assistant']):
+            prompt = query.replace("ask ai", "").replace("ai", "").replace("chatgpt", "").replace("gpt", "").replace("assistant", "").strip()
+            response = chatWithGPT(prompt)
+            speak(response)
+            return
+
+        # Flexible exit/quit
+        if any(word in query for word in ['exit', 'quit', 'close', 'bye', 'goodbye']):
+            speak("Goodbye!")
+            app.quit()
+            return
+
+        # --- Notes/Reminders NLP ---
+        if any(word in query for word in ['add note', 'add reminder', 'remember', 'save note', 'save reminder']):
+            note = query.split('note',1)[-1].strip() if 'note' in query else query.split('reminder',1)[-1].strip()
+            if not note:
+                note = simpledialog.askstring("Add Note/Reminder", "What should I remember?")
+            notes = load_notes()
+            notes.append(note)
+            save_notes(notes)
+            speak("Note added.")
+            log(f"Note added: {note}")
+            return
+        if any(word in query for word in ['show notes', 'show reminders', 'list notes', 'list reminders', 'my notes', 'my reminders']):
+            notes = load_notes()
+            if notes:
+                speak(f"You have {len(notes)} notes. First: {notes[0]}")
+                log("\n".join([f"{i+1}. {n}" for i,n in enumerate(notes)]))
+            else:
+                speak("You have no notes or reminders.")
+            return
+        if any(word in query for word in ['delete note', 'delete reminder', 'remove note', 'remove reminder']):
+            notes = load_notes()
+            idx = None
+            for i, n in enumerate(notes):
+                if n in query:
+                    idx = i
+                    break
+            if idx is None:
+                idx = simpledialog.askinteger("Delete Note", f"Enter note number to delete (1-{len(notes)}):")
+                if idx: idx -= 1
+            if idx is not None and 0 <= idx < len(notes):
+                removed = notes.pop(idx)
+                save_notes(notes)
+                speak("Note deleted.")
+                log(f"Deleted: {removed}")
+            else:
+                speak("Could not find that note.")
+            return
+
+        # --- Email NLP ---
+        if any(word in query for word in ['send email', 'email to', 'mail to']):
+            import re
+            settings = load_settings()
+            from_addr = settings.get('email_address', '')
+            password = settings.get('email_password', '')
+            if not from_addr or not password:
+                speak("Email not set up. Please add your email and app password to settings.json.")
+                return
+            # Try to extract recipient, subject, message
+            to_addr = re.search(r'(?:to|email to|mail to) ([^ ]+@[^ ]+)', query)
+            subject = re.search(r'subject (.+?)(?: message|$)', query)
+            msg_body = re.search(r'message (.+)', query)
+            to_addr = to_addr.group(1) if to_addr else simpledialog.askstring("Recipient", "Recipient email:")
+            subject = subject.group(1) if subject else simpledialog.askstring("Subject", "Email subject:")
+            msg_body = msg_body.group(1) if msg_body else simpledialog.askstring("Message", "Email message:")
+            if not to_addr or not subject or not msg_body:
+                speak("Email cancelled.")
+                return
+            try:
+                msg = MIMEMultipart()
+                msg['From'] = from_addr
+                msg['To'] = to_addr
+                msg['Subject'] = subject
+                msg.attach(MIMEText(msg_body, 'plain'))
+                server = smtplib.SMTP('smtp.gmail.com', 587)
+                server.starttls()
+                server.login(from_addr, password)
+                server.sendmail(from_addr, to_addr, msg.as_string())
+                server.quit()
+                speak("Email sent.")
+                log(f"Email sent to {to_addr} with subject '{subject}'")
+            except Exception as e:
+                speak("Failed to send email.")
+                log(f"Email error: {str(e)}")
+            return
+
+        # --- Screenshot NLP ---
+        if any(word in query for word in ['screenshot', 'take screenshot', 'capture screen', 'screen shot']):
+            import datetime
+            from PIL import ImageGrab
+            screenshots_dir = os.path.join(os.path.dirname(__file__), 'screenshots')
+            os.makedirs(screenshots_dir, exist_ok=True)
+            filename = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            filepath = os.path.join(screenshots_dir, filename)
+            img = ImageGrab.grab()
+            img.save(filepath)
+            speak("Screenshot taken.")
+            log(f"Screenshot saved to {filepath}")
+            return
+
+        # --- System Monitoring NLP ---
+        import importlib.util
+        psutil_spec = importlib.util.find_spec("psutil")
+        if psutil_spec is None:
+            if any(word in query for word in ['cpu usage', 'memory usage', 'ram usage', 'battery status', 'system info', 'system status']):
+                speak("System monitoring features require the psutil library. Please install it with pip install psutil.")
+                log("psutil not installed. Run: pip install psutil")
+                return
+        else:
+            import psutil
+            if any(word in query for word in ['cpu usage', 'cpu percent', 'processor usage']):
+                cpu = psutil.cpu_percent(interval=1)
+                speak(f"CPU usage is {cpu} percent.")
+                log(f"CPU usage: {cpu}%")
+                return
+            if any(word in query for word in ['memory usage', 'ram usage', 'memory percent', 'ram percent']):
+                mem = psutil.virtual_memory()
+                speak(f"Memory usage is {mem.percent} percent.")
+                log(f"Memory usage: {mem.percent}%")
+                return
+            if any(word in query for word in ['battery status', 'battery percent', 'battery level']):
+                battery = psutil.sensors_battery()
+                if battery:
+                    speak(f"Battery is at {battery.percent} percent.")
+                    log(f"Battery: {battery.percent}%")
+                else:
+                    speak("Battery status not available.")
+                return
+
+        # --- Calendar NLP ---
+        import re
+        import threading
+        global TIMER_RUNNING, TIMER_END, STOPWATCH_RUNNING, STOPWATCH_START, STOPWATCH_ELAPSED
+        if any(word in query for word in ['add event', 'add calendar', 'add meeting', 'add appointment']):
+            # Extract event title and time
+            title_match = re.search(r'(?:add event|add calendar|add meeting|add appointment) (.+?)(?: at | on |$)', query)
+            time_match = re.search(r'(?:at|on) (.+)', query)
+            title = title_match.group(1) if title_match else simpledialog.askstring("Event Title", "Event title:")
+            time_str = time_match.group(1) if time_match else simpledialog.askstring("Event Time", "When is the event?")
+            if not title or not time_str:
+                speak("Event cancelled.")
+                return
+            events = load_calendar()
+            events.append({'title': title, 'time': time_str})
+            save_calendar(events)
+            speak(f"Event '{title}' added for {time_str}.")
+            log(f"Event added: {title} at {time_str}")
+            return
+        if any(word in query for word in ['show calendar', 'show events', 'my calendar', 'my events', 'list events']):
+            events = load_calendar()
+            if events:
+                speak(f"You have {len(events)} events. First: {events[0]['title']} at {events[0]['time']}")
+                log("\n".join([f"{i+1}. {e['title']} at {e['time']}" for i,e in enumerate(events)]))
+            else:
+                speak("You have no events.")
+            return
+        if any(word in query for word in ['delete event', 'remove event']):
+            events = load_calendar()
+            idx = None
+            for i, e in enumerate(events):
+                if e['title'].lower() in query:
+                    idx = i
+                    break
+            if idx is None:
+                idx = simpledialog.askinteger("Delete Event", f"Enter event number to delete (1-{len(events)}):")
+                if idx: idx -= 1
+            if idx is not None and 0 <= idx < len(events):
+                removed = events.pop(idx)
+                save_calendar(events)
+                speak("Event deleted.")
+                log(f"Deleted event: {removed['title']} at {removed['time']}")
+            else:
+                speak("Could not find that event.")
+            return
+
+        # --- Timer NLP ---
+        if any(word in query for word in ['set timer', 'start timer', 'timer for', 'countdown']):
+            time_match = re.search(r'(\d+) ?(second|minute|hour)s?', query)
+            if not time_match:
+                speak("Please specify timer duration, like 'set timer for 5 minutes'.")
+                return
+            amount, unit = int(time_match.group(1)), time_match.group(2)
+            seconds = amount * (1 if unit.startswith('second') else 60 if unit.startswith('minute') else 3600)
+            TIMER_RUNNING = True
+            TIMER_END = time.time() + seconds
+            def timer_thread():
+                global TIMER_RUNNING, TIMER_END
+                while TIMER_RUNNING and time.time() < TIMER_END:
+                    time.sleep(1)
+                if TIMER_RUNNING:
+                    speak("Timer finished.")
+                    notification.notify(title="JARVIS Timer", message="Timer finished!", timeout=5)
+                TIMER_RUNNING = False
+            threading.Thread(target=timer_thread, daemon=True).start()
+            speak(f"Timer set for {amount} {unit}{'s' if amount>1 else ''}.")
+            return
+        if any(word in query for word in ['stop timer', 'cancel timer']):
+            if TIMER_RUNNING:
+                TIMER_RUNNING = False
+                speak("Timer cancelled.")
+            else:
+                speak("No timer running.")
+            return
+        if any(word in query for word in ['timer status', 'how much time left', 'time left on timer']):
+            if TIMER_RUNNING and TIMER_END:
+                left = int(TIMER_END - time.time())
+                if left > 0:
+                    speak(f"{left} seconds left on the timer.")
+                else:
+                    speak("Timer is about to finish.")
+            else:
+                speak("No timer running.")
+            return
+
+        # --- Stopwatch NLP ---
+        if any(word in query for word in ['start stopwatch', 'begin stopwatch', 'start timer', 'begin timer']):
+            if not STOPWATCH_RUNNING:
+                STOPWATCH_RUNNING = True
+                STOPWATCH_START = time.time() - STOPWATCH_ELAPSED
+                speak("Stopwatch started.")
+            else:
+                speak("Stopwatch already running.")
+            return
+        if any(word in query for word in ['stop stopwatch', 'pause stopwatch', 'stop timer', 'pause timer']):
+            if STOPWATCH_RUNNING:
+                STOPWATCH_ELAPSED = time.time() - STOPWATCH_START
+                STOPWATCH_RUNNING = False
+                speak(f"Stopwatch stopped at {int(STOPWATCH_ELAPSED)} seconds.")
+            else:
+                speak("Stopwatch is not running.")
+            return
+        if any(word in query for word in ['reset stopwatch', 'reset timer']):
+            STOPWATCH_RUNNING = False
+            STOPWATCH_ELAPSED = 0
+            speak("Stopwatch reset.")
+            return
+        if any(word in query for word in ['show stopwatch', 'stopwatch time', 'timer time']):
+            elapsed = time.time() - STOPWATCH_START if STOPWATCH_RUNNING else STOPWATCH_ELAPSED
+            speak(f"Stopwatch time is {int(elapsed)} seconds.")
+            return
+
+        # --- Plugin Commands ---
+        for cmd in PLUGIN_COMMANDS:
+            if any(word in query for word in cmd['triggers']):
+                try:
+                    cmd['handler'](query, speak, log)
+                except Exception as e:
+                    log(f"Plugin error: {e}")
+                    show_error(f"Plugin error: {e}", "Plugin Error")
+                return
+
+        speak("I didn't recognize the command.")
+    except Exception as e:
+        log(f"Execution Error: {str(e)}")
+        show_error(f"Execution Error: {str(e)}", "Command Execution Error")
+        speak("Error executing command.")
+
+def startListening():
+    def listen_and_execute():
+        query = takeCommand()
+        if query != "none":
+            executeCommand(query)
+            status_label.config(text="Status: Idle")
+    threading.Thread(target=listen_and_execute, daemon=True).start()
+
+def toggleDarkMode():
+    global DARK_MODE
+    if app.cget("bg") == "#FFFFFF":
+        bg_color = "#2E2E2E"
+        fg_color = "#FFFFFF"
+        DARK_MODE = True
+    else:
+        bg_color = "#FFFFFF"
+        fg_color = "#000000"
+        DARK_MODE = False
+    app.configure(bg=bg_color)
+    title.configure(bg=bg_color, fg=fg_color)
+    log_text.configure(bg=bg_color, fg=fg_color, insertbackground=fg_color)
+    for button in buttons:
+        button.configure(bg=bg_color, fg=fg_color)
+    status_label.configure(bg=bg_color, fg=fg_color)
+    update_setting('dark_mode', DARK_MODE)
+
+def changeVoice():
+    voices = engine.getProperty('voices')
+    current_voice = engine.getProperty('voice')
+    new_index = 1 if current_voice == voices[0].id else 0
+    engine.setProperty('voice', voices[new_index].id)
+    update_setting('voice', new_index)
+    speak("Voice changed successfully.")
+
+def askAI(typed=False):
+    if typed:
+        user_query = ai_entry_box.get()
+    else:
+        user_query = entry_box.get()
+    if user_query.strip():
+        chatWithGPT(user_query)
+    else:
+        log("Please enter a question.")
+
+def show_help():
+    help_text = (
+        "JARVIS AI Assistant Usage Guide\n\n"
+        "You can use both voice and text commands.\n\n"
+        "Supported commands (examples):\n"
+        "- Open apps: 'open chrome', 'start browser', 'launch notepad', 'play music'\n"
+        "- Weather: 'what's the weather', 'show temperature in Mumbai'\n"
+        "- Set city: 'set my city to Pune', 'change location to Delhi'\n"
+        "- Reminders: 'remind me', 'show reminder'\n"
+        "- Clipboard: 'read my clipboard', 'paste'\n"
+        "- Volume: 'volume up', 'increase volume', 'louder'\n"
+        "- Time: 'what time is it', 'the time'\n"
+        "- AI chat: 'ask ai', 'chatgpt', 'assistant'\n"
+        "- Exit: 'exit', 'quit', 'bye'\n\n"
+        "You can also type or speak your commands.\n"
+        "To change your city for weather, use: 'set my city to <city>'\n"
+        "To toggle dark mode or change voice, use the buttons.\n"
+        "For more, see the About section."
+    )
+    messagebox.showinfo("JARVIS Help", help_text)
+
+def add_tooltip(widget, text):
+    def on_enter(e):
+        widget.tooltip = tk.Toplevel(widget)
+        widget.tooltip.wm_overrideredirect(True)
+        x = widget.winfo_rootx() + 40
+        y = widget.winfo_rooty() + 20
+        widget.tooltip.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(widget.tooltip, text=text, bg="#FFFFE0", relief=tk.SOLID, borderwidth=1, font=("Segoe UI", 10))
+        label.pack()
+    def on_leave(e):
+        if hasattr(widget, 'tooltip') and widget.tooltip is not None:
+            widget.tooltip.destroy()
+            widget.tooltip = None
+    widget.bind("<Enter>", on_enter)
+    widget.bind("<Leave>", on_leave)
+
+# --- Theme Definitions and Related Functions ---
+THEMES = {
+    'Light': {'bg': '#FFFFFF', 'fg': '#000000'},
+    'Dark': {'bg': '#2E2E2E', 'fg': '#FFFFFF'},
+    'Blue': {'bg': '#4F8EF7', 'fg': '#FFFFFF'},
+    'Gold': {'bg': '#FFD700', 'fg': '#222222'},
+}
+
+def set_theme(theme_name):
+    theme = THEMES.get(theme_name, THEMES['Light'])
+    app.configure(bg=theme['bg'])
+    title.configure(bg=theme['bg'], fg=theme['fg'])
+    log_text.configure(bg=theme['bg'], fg=theme['fg'], insertbackground=theme['fg'])
+    for button in buttons:
+        button.configure(bg=theme['bg'], fg=theme['fg'])
+    status_label.configure(bg=theme['bg'], fg=theme['fg'])
+    update_setting('theme', theme_name)
+
+def show_plugin_manager():
+    messagebox.showinfo("Plugin Manager", "This would open the plugin manager window.")
+
+def show_clipboard_history():
+    messagebox.showinfo("Clipboard History", "This would show the clipboard history window.")
+
+def create_tray_icon():
+    # Stub for system tray icon creation
+    pass
+
+def load_plugins():
+    # Stub for plugin loading logic
+    pass
+
+# --- Command History logic ---
+HISTORY_LIMIT = 10
+command_history = []
+
+def clear_history():
+    global command_history
+    command_history = []
+    history_text.config(state='normal')
+    history_text.delete(1.0, tk.END)
+    history_text.config(state='disabled')
+
+def update_history(text):
+    command_history.append(text)
+    if len(command_history) > HISTORY_LIMIT:
+        command_history.pop(0)
+    history_text.config(state='normal')
+    history_text.delete(1.0, tk.END)
+    for item in command_history:
+        history_text.insert(tk.END, item + "\n")
+    history_text.config(state='disabled')
+
+def executeCommandWithHistory(query):
+    def run_command():
+        if query.strip():
+            update_history(f"You: {query}")
+            executeCommand(query)
+    threading.Thread(target=run_command, daemon=True).start()
+
+def askAIWithHistory(typed=False):
+    if typed:
+        user_query = ai_entry_box.get()
+    else:
+        user_query = entry_box.get()
+    if user_query.strip():
+        update_history(f"You (AI): {user_query}")
+        response = chatWithGPT(user_query)
+        update_history(f"AI: {response}")
+    else:
+        log("Please enter a question.")
+
+def on_quit():
+    if messagebox.askokcancel("Quit", "Are you sure you want to quit JARVIS?"):
+        app.quit()
+
+def show_error(message, title="Error"):
+    message = mask_sensitive(message)
+    status_label.config(text=f"Status: {message}", fg="red")
+    app.update_idletasks()
+    messagebox.showerror(title, message)
+
+# --- GUI Application ---
+def guiApp():
+    global app, log_text, title, entry_box, ai_entry_box, buttons, status_label, DARK_MODE, history_text
+
+    app = tk.Tk()
+    app.title("JARVIS AI Assistant")
+    app.geometry("700x1000")  # Increased height for all panels
+
+    # Set initial dark mode from settings
+    if DARK_MODE:
+        bg_color = "#2E2E2E"
+        fg_color = "#FFFFFF"
+    else:
+        bg_color = "#FFFFFF"
+        fg_color = "#000000"
+    app.configure(bg=bg_color)
+
+    title = tk.Label(app, text="JARVIS AI Assistant", font=("Helvetica", 18, "bold"), bg=bg_color, fg=fg_color)
+    title.pack(pady=5)
+
+    status_label = tk.Label(app, text="Status: Idle", font=("Helvetica", 10), bg=bg_color, fg="blue")
+    status_label.pack()
+
+    log_text = scrolledtext.ScrolledText(app, height=10, width=50, font=("Helvetica", 12), bg=bg_color, fg=fg_color, insertbackground=fg_color)
+    log_text.pack(pady=10, fill=tk.BOTH, expand=False)
+
+    # Command History panel
+    history_label = tk.Label(app, text="Command History", font=("Helvetica", 12, "bold"), bg=bg_color, fg=fg_color)
+    history_label.pack(pady=(10,0))
+    history_text = scrolledtext.ScrolledText(app, height=7, width=50, font=("Helvetica", 11), bg=bg_color, fg=fg_color, insertbackground=fg_color, state='disabled')
+    history_text.pack(pady=5, fill=tk.BOTH, expand=False)
+
+    # Entry box for normal commands (typed instead of speaking)
+    entry_box = tk.Entry(app, width=40, font=("Helvetica", 12))
+    entry_box.pack(pady=5)
+    tk.Button(app, text="Send Command", font=("Helvetica", 12), command=lambda: executeCommandWithHistory(entry_box.get())).pack(pady=2)
+
+    # Entry box for AI questions
+    ai_entry_box = tk.Entry(app, width=40, font=("Helvetica", 12))
+    ai_entry_box.pack(pady=5)
+    tk.Button(app, text="Ask AI (Typed)", font=("Helvetica", 12), command=lambda: askAIWithHistory(typed=True)).pack(pady=2)
+
+    # Modern color palette
+    accent_color = "#4F8EF7"  # Blue accent
+    button_bg = "#FFD700" if DARK_MODE else "#1A237E"  # Gold on dark, deep blue on light
+    button_fg = "#222222" if DARK_MODE else "#FFFFFF"  # Dark text on gold, white on blue
+    entry_bg = "#222222" if DARK_MODE else "#F7F7F7"
+    entry_fg = fg_color
+    border_color = accent_color
+
+    # --- Button Panel Label ---
+    button_panel_label = tk.Label(app, text="Actions", font=("Segoe UI", 14, "bold"), bg=accent_color, fg="#222222" if DARK_MODE else "#FFFFFF", pady=5)
+    button_panel_label.pack(pady=(10, 0), fill=tk.X)
+
+    # Use a Canvas + Scrollbar for the button frame to make it scrollable
+    button_canvas = tk.Canvas(app, bg=accent_color, highlightthickness=2, highlightbackground="#000000", height=340)
+    button_scrollbar = tk.Scrollbar(app, orient="vertical", command=button_canvas.yview)
+    button_scrollable_frame = tk.Frame(button_canvas, bg=accent_color)
+
+    button_scrollable_frame.bind(
+        "<Configure>",
+        lambda e: button_canvas.configure(
+            scrollregion=button_canvas.bbox("all")
+        )
+    )
+
+    button_canvas.create_window((0, 0), window=button_scrollable_frame, anchor="nw")
+    button_canvas.configure(yscrollcommand=button_scrollbar.set)
+    button_canvas.pack(side="left", fill="x", expand=False, padx=(30, 0), pady=(0, 20))
+    button_scrollbar.pack(side="right", fill="y")
+
+    # Define buttons before packing
+    buttons = [
+        tk.Button(button_scrollable_frame, text="Speak", font=("Segoe UI", 16, "bold"), command=startListening, height=2, width=18),
+        # tk.Button(button_scrollable_frame, text="Ask AI (Voice)", font=("Segoe UI", 16, "bold"), command=askAIWithHistory, height=2, width=18),
+        tk.Button(button_scrollable_frame, text="Help", font=("Segoe UI", 16, "bold"), command=show_help, height=2, width=18),
+        tk.Button(button_scrollable_frame, text="About", font=("Segoe UI", 16, "bold"),
+                  command=lambda: messagebox.showinfo("About", "JARVIS AI Assistant\nDeveloped by Sarthak & Meet"), height=2, width=18),
+        tk.Button(button_scrollable_frame, text="Toggle Dark Mode", font=("Segoe UI", 16, "bold"), command=toggleDarkMode, height=2, width=18),
+        tk.Button(button_scrollable_frame, text="Change Voice", font=("Segoe UI", 16, "bold"), command=changeVoice, height=2, width=18),
+        tk.Button(button_scrollable_frame, text="Quit", font=("Segoe UI", 16, "bold"), command=on_quit, height=2, width=18),
+    ]
+
+    # Redefine buttons with new style and pack with spacing
+    for btn in buttons:
+        btn.config(bg=button_bg, fg=button_fg, activebackground=accent_color, activeforeground="#FFD700", relief=tk.RAISED, borderwidth=4, highlightbackground=accent_color, highlightcolor=accent_color, cursor="hand2")
+        btn.pack(pady=8, padx=10)
+        btn.bind("<Enter>", lambda e, b=btn: b.config(bg=accent_color, fg="#FFD700"))
+        btn.bind("<Leave>", lambda e, b=btn: b.config(bg=button_bg, fg=button_fg))
+
+    app.configure(bg=bg_color)
+    button_scrollable_frame.config(bg=bg_color)
+    button_canvas.config(bg=bg_color)
+    button_scrollbar.config(bg=bg_color, troughcolor=bg_color, activebackground=accent_color, highlightcolor=accent_color)
+
+    # Make window resizable and add vertical scrollbar if needed
+    app.update()
+    app.minsize(700, app.winfo_height())
+    app.resizable(True, True)
+
+    # Onboarding popup (first run)
+    if not settings.get('onboarded', False):
+        messagebox.showinfo("Welcome to JARVIS!", "Welcome!\n\nThis is your AI desktop assistant.\n\n- Use voice or text commands.\n- Try: 'open chrome', 'what's the weather', 'add note', 'ask ai', etc.\n- See Help for more.\n\nEnjoy!")
+        update_setting('onboarded', True)
+
+    # Add Clear History button
+    tk.Button(app, text="Clear History", font=("Helvetica", 12), command=clear_history).pack(pady=2)
+
+    # Add tooltips to main widgets
+    add_tooltip(entry_box, "Type a command and press Send Command")
+    add_tooltip(ai_entry_box, "Type a question for AI and press Ask AI (Typed)")
+    for btn, tip in zip(buttons, [
+        "Speak a command using your microphone",
+        "Ask AI a question using your voice",
+        "Show usage instructions",
+        "About this app",
+        "Toggle dark/light mode",
+        "Switch between voices",
+        "Quit the assistant"
+    ]):
+        add_tooltip(btn, tip)
+
+    # Theme selector
+    theme_var = tk.StringVar(value=settings.get('theme', 'Light'))
+    theme_menu = tk.OptionMenu(app, theme_var, *THEMES.keys(), command=set_theme)
+    theme_menu.pack(pady=2)
+    add_tooltip(theme_menu, "Select a color theme")
+    # Plugin manager
+    tk.Button(app, text="Plugin Manager", font=("Helvetica", 12), command=show_plugin_manager).pack(pady=2)
+    # Clipboard history
+    tk.Button(app, text="Clipboard History", font=("Helvetica", 12), command=show_clipboard_history).pack(pady=2)
+    # System tray
+    create_tray_icon()
+
+    # Start the Tkinter main event loop to keep the window open
+    app.mainloop()
+
+def load_notes():
+    try:
+        if os.path.exists(NOTES_FILE):
+            with open(NOTES_FILE, 'r') as f:
+                return json.load(f)
+        else:
+            return []
+    except Exception:
+        return []
+
+def save_notes(notes):
+    try:
+        with open(NOTES_FILE, 'w') as f:
+            json.dump(notes, f, indent=2)
+    except Exception as e:
+        log(f"Error saving notes: {e}")
+
+def load_calendar():
+    try:
+        if os.path.exists(CALENDAR_FILE):
+            with open(CALENDAR_FILE, 'r') as f:
+                return json.load(f)
+        else:
+            return []
+    except Exception:
+        return []
+
+def save_calendar(events):
+    try:
+        with open(CALENDAR_FILE, 'w') as f:
+            json.dump(events, f, indent=2)
+    except Exception as e:
+        log(f"Error saving calendar: {e}")
+
+def show_notes_window():
+    notes = load_notes()
+    # Use global color variables
+    global bg_color, button_bg, button_fg
+    notes_win = tk.Toplevel(app)
+    notes_win.title("Your Notes & Reminders")
+    notes_win.geometry("400x400")
+    notes_win.configure(bg=bg_color)
+    
+    notes_listbox = tk.Listbox(notes_win, font=("Segoe UI", 12), width=40, height=12, bg=bg_color, fg=button_fg)
+    notes_listbox.pack(pady=10)
+    for note in notes:
+        notes_listbox.insert(tk.END, note)
+    
+    def add_note():
+        note = simpledialog.askstring("Add Note/Reminder", "Enter your note/reminder:", parent=notes_win)
+        if note:
+            notes.append(note)
+            save_notes(notes)
+            notes_listbox.insert(tk.END, note)
+    
+    def delete_note():
+        sel = notes_listbox.curselection()
+        if sel:
+            idx = sel[0]
+            notes.pop(idx)
+            save_notes(notes)
+            notes_listbox.delete(idx)
+    
+    add_btn = tk.Button(notes_win, text="Add", font=("Segoe UI", 12, "bold"), command=add_note, bg=button_bg, fg=button_fg)
+    add_btn.pack(side=tk.LEFT, padx=20, pady=10)
+    del_btn = tk.Button(notes_win, text="Delete", font=("Segoe UI", 12, "bold"), command=delete_note, bg=button_bg, fg=button_fg)
+    del_btn.pack(side=tk.RIGHT, padx=20, pady=10)
+
+def send_email_window():
+    global bg_color, button_bg, button_fg
+    email_win = tk.Toplevel(app)
+    email_win.title("Send Email")
+    email_win.geometry("420x350")
+    email_win.configure(bg=bg_color)
+
+    tk.Label(email_win, text="Recipient Email:", font=("Segoe UI", 12), bg=bg_color, fg=button_fg).pack(pady=(10,0))
+    to_entry = tk.Entry(email_win, font=("Segoe UI", 12), width=40)
+    to_entry.pack(pady=2)
+    tk.Label(email_win, text="Subject:", font=("Segoe UI", 12), bg=bg_color, fg=button_fg).pack(pady=(10,0))
+    subject_entry = tk.Entry(email_win, font=("Segoe UI", 12), width=40)
+    subject_entry.pack(pady=2)
+    tk.Label(email_win, text="Message:", font=("Segoe UI", 12), bg=bg_color, fg=button_fg).pack(pady=(10,0))
+    msg_text = tk.Text(email_win, font=("Segoe UI", 12), width=40, height=6)
+    msg_text.pack(pady=2)
+
+    def do_send():
+        to_addr = to_entry.get().strip()
+        subject = subject_entry.get().strip()
+        msg_body = msg_text.get("1.0", tk.END).strip()
+        if not to_addr or not subject or not msg_body:
+            messagebox.showerror("Error", "All fields are required.", parent=email_win)
+            return
+        # Get email credentials from settings
+        settings = load_settings()
+        from_addr = settings.get('email_address', '')
+        password = settings.get('email_password', '')
+        if not from_addr or not password:
+            messagebox.showerror("Email Setup Required", "Please set your email and app password in settings.json.", parent=email_win)
+            return
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = from_addr
+            msg['To'] = to_addr
+            msg['Subject'] = subject
+            msg.attach(MIMEText(msg_body, 'plain'))
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            server.login(from_addr, password)
+            server.sendmail(from_addr, to_addr, msg.as_string())
+            server.quit()
+            messagebox.showinfo("Success", "Email sent successfully!", parent=email_win)
+            email_win.destroy()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send email: {str(e)}", parent=email_win)
+
+    send_btn = tk.Button(email_win, text="Send Email", font=("Segoe UI", 12, "bold"), command=do_send, bg=button_bg, fg=button_fg)
+    send_btn.pack(pady=15)
+    tk.Label(email_win, text="(Gmail only: Use an app password, not your main password)", font=("Segoe UI", 9), bg=bg_color, fg=button_fg).pack(pady=(0,10))
+
+def take_screenshot():
+    import datetime
+    from PIL import ImageGrab
+    global bg_color, button_bg, button_fg
+    # Ensure screenshots directory exists
+    screenshots_dir = os.path.join(os.path.dirname(__file__), 'screenshots')
+    os.makedirs(screenshots_dir, exist_ok=True)
+    # Filename with timestamp
+    filename = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    filepath = os.path.join(screenshots_dir, filename)
+    # Take screenshot
+    img = ImageGrab.grab()
+    img.save(filepath)
+    def open_folder():
+        import subprocess
+        subprocess.Popen(f'explorer "{screenshots_dir}"')
+    # Show popup
+    popup = tk.Toplevel(app)
+    popup.title("Screenshot Saved")
+    popup.configure(bg=bg_color)
+    tk.Label(popup, text=f"Screenshot saved to:\n{filepath}", font=("Segoe UI", 11), bg=bg_color, fg=button_fg).pack(pady=10)
+    tk.Button(popup, text="Open Folder", font=("Segoe UI", 11, "bold"), command=open_folder, bg=button_bg, fg=button_fg).pack(pady=5)
+    tk.Button(popup, text="Close", font=("Segoe UI", 11), command=popup.destroy, bg=button_bg, fg=button_fg).pack(pady=5)
+
+# --- Plugin System ---
+PLUGINS_DIR = os.path.join(os.path.dirname(__file__), 'plugins')
+PLUGIN_COMMANDS = []
+
+def add_plugin_command(trigger_words, handler, description=None):
+    PLUGIN_COMMANDS.append({'triggers': trigger_words, 'handler': handler, 'description': description})
+
+def load_plugins():
+    if not os.path.isdir(PLUGINS_DIR):
+        return
+    for plugin_path in glob.glob(os.path.join(PLUGINS_DIR, '*.py')):
+        name = os.path.splitext(os.path.basename(plugin_path))[0]
+        if name.startswith('_'):
+            continue
+        spec = importlib.util.spec_from_file_location(name, plugin_path)
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)
+                if hasattr(mod, 'register'):
+                    mod.register({'add_command': add_plugin_command})
+            except Exception as e:
+                print(f"Error loading plugin {name}: {e}")
+
+# Call this before mainloop
+load_plugins()
+
+# 📦 Now call the app AFTER all functions are declared
+try:
+    guiApp()
+except Exception as e:
+    import traceback
+    err = traceback.format_exc()
+    print("JARVIS startup error:\n", err)
+    try:
+        tk.Tk().withdraw()
+        messagebox.showerror("JARVIS Startup Error", f"An error occurred while starting JARVIS:\n\n{e}\n\n{err}")
+    except Exception:
+        pass
+    sys.exit(1)
