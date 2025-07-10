@@ -21,7 +21,7 @@ engine.setProperty('rate', 150)
 log_file_path = "jarvis_session_log.txt"
 chat_history = []
 
-openai.api_key = "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"
+openai.api_key = ""
 
 def speak(audio):
     engine.say(audio)
