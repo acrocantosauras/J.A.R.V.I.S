@@ -1,4 +1,11 @@
 jarvis.log
+jarvis_session_log.txt
 __pycache__/
 *.pyc
 .env
+settings.key
+notes.json
+calendar.json
+conversation_memory.json
+screenshots/
+clipboard_history.json

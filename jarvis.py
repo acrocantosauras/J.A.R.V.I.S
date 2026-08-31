@@ -357,11 +357,11 @@ class AIChat:
             logger.info("AI response generated")
             return ai_response
 
-        except openai.error.AuthenticationError:
+        except openai.AuthenticationError:
             return "Invalid API key. Please check your OpenAI API key in settings."
-        except openai.error.RateLimitError:
+        except openai.RateLimitError:
             return "Rate limit exceeded. Please wait a moment and try again."
-        except openai.error.APIConnectionError:
+        except openai.APIConnectionError:
             return "Cannot connect to OpenAI. Please check your internet connection."
         except Exception as e:
             logger.error(f"AI chat error: {e}")
