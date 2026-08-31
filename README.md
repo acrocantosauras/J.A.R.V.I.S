@@ -68,7 +68,7 @@ A modern, voice-controlled AI assistant for Windows with a sleek GUI, smart comm
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/jarvis.git
+   git clone https://github.com/acrocantosauras/jarvis.git
    cd jarvis
    ```
 
